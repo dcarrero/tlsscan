@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-22
+
+### Fixed
+- **SSLv3 probe latency.** The legacy SSLv3 probe used the full scan timeout as its
+  read deadline, so servers that silently ignore SSLv3 (the common case) blocked the
+  whole scan for many seconds. The probe is now capped to a short 4s window
+  (a server that speaks SSLv3 answers immediately; silence is treated as unsupported).
+
 ## [0.1.0] - 2026-06-22
 
 First public release of the `github.com/dcarrero/tlsscan` module — a dependency-free,

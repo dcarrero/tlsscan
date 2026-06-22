@@ -38,6 +38,14 @@ const (
 // alert, a connection reset, a timeout, or any non-SSLv3 record version is
 // treated as "not supported" (fail safe).
 func ProbeSSL3(ctx context.Context, addr string, timeout time.Duration) bool {
+	// A server that speaks SSLv3 answers almost immediately; one that doesn't
+	// often just stays silent, which would otherwise block the read for the full
+	// scan timeout. Cap the legacy probe to a short window so it never dominates
+	// the scan latency (fail-safe: silence => not supported).
+	if timeout > 4*time.Second {
+		timeout = 4 * time.Second
+	}
+
 	d := &net.Dialer{Timeout: timeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
