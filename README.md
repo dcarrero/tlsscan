@@ -172,6 +172,27 @@ non-vulnerable answer, never a false positive.
 - **Insecure renegotiation (RFC 5746)** — sends a TLS 1.2 ClientHello advertising
   an empty `renegotiation_info` extension; a ServerHello that does NOT echo
   `renegotiation_info` (0xff01) lacks secure renegotiation support.
+- **ROBOT (Return Of Bleichenbacher's Oracle Threat, 2017)** — a faithful,
+  dependency-free reimplementation of the canonical *robot-detect* technique
+  (Böck / Somorovsky / Young). ROBOT only applies to **RSA key exchange**
+  (`TLS_RSA_WITH_*` suites), so the probe first offers RSA-kex *only*; if the
+  server does not select an RSA-kex suite, ROBOT does not apply (`false`). It
+  then extracts the server's RSA public key from its Certificate and sends five
+  crafted PKCS#1 v1.5 `ClientKeyExchange` vectors — one well-formed and four
+  malformed in distinct ways (wrong first bytes, no `0x00` delimiter, `0x00`
+  inside the padding, wrong embedded TLS version) — each encrypted with the
+  public key via plain modular exponentiation (`c = m^e mod N`, *not* a crypto
+  reimplementation). Each vector is followed by ChangeCipherSpec and a bogus
+  Finished, and the server's reaction (alert level/desc, handshake continuation,
+  reset, close, timeout) is summarised into a robust signature, repeated for
+  stability. **Decision is strictly fail-safe:** the server is reported
+  vulnerable *only* when the well-formed vector is consistently and reproducibly
+  distinguishable from **every** malformed vector; if all responses are identical
+  (the countermeasure), or anything is noisy/ambiguous, the result is `false`.
+  ROBOT is a **critical** vulnerability and caps the grade to **F**. The
+  true-positive path is validated **by construction** (vector layout + decision
+  logic) because we have no vulnerable reference server; the network tests only
+  assert *no false positives*.
 
 **Inferred from the protocol / cipher results:**
 
@@ -196,7 +217,7 @@ grade and adjusted by **grade caps**:
 | Condition | Cap |
 |-----------|-----|
 | Certificate trust problem (invalid / self-signed / distrusted / hostname mismatch) | **T** |
-| Critical vulnerability (Heartbleed, DROWN, insecure renegotiation) | **F** |
+| Critical vulnerability (Heartbleed, DROWN, ROBOT, insecure renegotiation) | **F** |
 | SSLv2 enabled | **F** |
 | SSLv3 enabled | **C** |
 | Export ciphers (FREAK / Logjam) | **C** |
@@ -229,20 +250,21 @@ tlsscan is honest about what is and isn't implemented. The following are present
 `Result` schema (so the JSON contract is stable) but are **deferred** and **always
 return `false`** today:
 
-- **ROBOT**
 - **GoldenDoodle**
 - **ZombiePoodle**
 - **SleepingPoodle**
 - **CVE-2019-1559** (zero-length padding oracle)
 
-These are all padding / Bleichenbacher-style oracles. Detecting them reliably requires
+These remaining four are all **CBC** padding oracles. Detecting them reliably requires
 **differential timing/response analysis** across many crafted records, which carries a
 high false-positive risk against load balancers, WAFs and tolerant TLS stacks. Rather
 than emit unreliable findings, they are deliberately left unimplemented until they can
 be probed without false positives.
 
-Everything else listed under *Vulnerabilities* above — Heartbleed, SSLv2/DROWN, FREAK,
-Logjam, TLS_FALLBACK_SCSV and insecure renegotiation — is now a real active probe.
+**ROBOT** is no longer deferred: it is now a real active probe (see *Active probes*
+above). Everything else listed under *Vulnerabilities* — Heartbleed, SSLv2/DROWN,
+FREAK, Logjam, TLS_FALLBACK_SCSV, insecure renegotiation and ROBOT — is a real active
+probe.
 
 ## Security / SSRF note
 

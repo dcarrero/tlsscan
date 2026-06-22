@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-22
+
+### Added
+
+- **ROBOT detection (Return Of Bleichenbacher's Oracle Threat, 2017).** ROBOT
+  moves from *deferred* to an **active probe** (`handshake.ProbeROBOT`), wired
+  into `probeVulnerabilities` and exposed as `vulnerabilities.robot`. It is a
+  faithful, dependency-free reimplementation of the canonical *robot-detect*
+  technique (Böck / Somorovsky / Young) — not an invented heuristic.
+
+  Method:
+  1. **Prerequisite — RSA key exchange only.** A TLS 1.2 ClientHello is sent
+     offering *only* `TLS_RSA_WITH_*` suites (0x009d / 0x009c / 0x003d / 0x003c /
+     0x0035 / 0x002f / 0x000a) plus SNI. If the server does not select an RSA-kex
+     suite (it prefers ECDHE/DHE, or answers with an alert/handshake_failure),
+     ROBOT does not apply ⇒ `robot: false`. Otherwise the server's RSA public key
+     (modulus N, exponent e) is parsed from its Certificate via `crypto/x509`.
+  2. **Five PKCS#1 v1.5 vectors.** One well-formed (`00 02 || PS(≥8 non-zero) ||
+     00 || PMS(48)`) and four malformed in distinct ways — wrong first bytes
+     (`0x41 0x17`), no `0x00` delimiter, a `0x00` inside the mandatory 8-byte
+     padding, and a `0x00` leaving a wrong embedded TLS client_version. Each block
+     is RSA-encrypted with the server's public key by plain modular exponentiation
+     (`c = m^e mod N`, `math/big`) — this is **not** a cryptographic
+     reimplementation.
+  3. **Per-vector exchange.** On a fresh connection per attempt: ClientHello →
+     ServerHello → Certificate → ServerHelloDone, then a crafted
+     `ClientKeyExchange` (length-prefixed RSA ciphertext), `ChangeCipherSpec`, and
+     a bogus encrypted `Finished`. The server's reaction is summarised into a
+     robust signature (alert level+description / handshake continuation / reset /
+     close / timeout) and each vector is repeated for stability.
+  4. **Decision — strictly fail-safe.** Vulnerable (`true`) *only* when the
+     well-formed vector's signature is consistently and reproducibly
+     distinguishable from **every** malformed vector. If all responses are
+     identical (the countermeasure), if any malformed vector matches the
+     well-formed one, or if anything is noisy/ambiguous/timed out ⇒ `false`.
+     **Never a false positive.**
+
+  ROBOT is a **critical** vulnerability and continues to cap the grade to **F**.
+  Per-connection deadlines and a short response-read window keep the probe fast
+  (≈0.5 s on hosts without RSA kex; a few seconds on RSA-kex hosts) and well
+  within the scan budget.
+
+### Notes / validation
+
+- The **true-positive** path is validated **by construction** (PKCS#1 vector
+  layout, RSA-kex prerequisite, and the differential decision logic), with
+  offline unit tests for vector construction and SNI framing. We do **not** assert
+  a live true positive because there is no publicly available vulnerable
+  reference server; the network tests assert only *no false positives* against
+  `google.com`, `cloudflare.com`, `badssl.com` and `sha256.badssl.com` (all of
+  which deploy the countermeasure or disable RSA key exchange).
+
+### Still deferred (intentionally always `false`)
+
+GoldenDoodle, ZombiePoodle, SleepingPoodle and CVE-2019-1559 remain deferred:
+they are **CBC** padding oracles requiring differential timing/response analysis
+with a high false-positive risk against load balancers, WAFs and tolerant TLS
+stacks. They stay in the JSON contract but are not yet implemented and will be
+handled separately.
+
 ## [0.2.0] - 2026-06-22
 
 ### Added

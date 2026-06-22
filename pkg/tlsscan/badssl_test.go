@@ -152,7 +152,7 @@ func TestFallbackProbeVersion(t *testing.T) {
 // fire. Robustness here matters more than asserting presence on fragile legacy
 // hosts.
 func TestModernServers_NoFalseVulns(t *testing.T) {
-	for _, host := range []string{"google.com", "cloudflare.com", "sha256.badssl.com"} {
+	for _, host := range []string{"google.com", "cloudflare.com", "badssl.com", "sha256.badssl.com"} {
 		host := host
 		t.Run(host, func(t *testing.T) {
 			res := scanBadSSL(t, host, true)
@@ -177,6 +177,13 @@ func TestModernServers_NoFalseVulns(t *testing.T) {
 			}
 			if v.Heartbleed {
 				t.Errorf("%s: Heartbleed = true, want false", host)
+			}
+			// ROBOT must never fire against these hosts: they either disable RSA
+			// key exchange entirely or deploy the Bleichenbacher countermeasure.
+			// We assert NO false positive only; a true positive is validated by
+			// construction (we have no vulnerable reference server).
+			if v.Robot {
+				t.Errorf("%s: ROBOT = true, want false", host)
 			}
 		})
 	}

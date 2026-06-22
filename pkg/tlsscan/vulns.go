@@ -9,8 +9,9 @@ import (
 
 // probeVulnerabilities derives vulnerability status. Many flaws can be inferred
 // from the protocol/cipher results already gathered (cheap); a few require
-// active probes (Heartbleed, ROBOT) implemented in internal/vulns and wired in
-// production. Inferred flaws are computed here from the Result so far.
+// active probes (Heartbleed in internal/vulns; FREAK/Logjam/FALLBACK_SCSV/
+// insecure-renegotiation/ROBOT in internal/handshake). Inferred flaws are
+// computed here from the Result so far.
 //
 // This is the layer where we can exceed testssl.sh, which documents that it
 // does NOT yet cover GoldenDoodle, Sleeping/Zombie POODLE, CVE-2019-1559 and
@@ -50,6 +51,14 @@ func probeVulnerabilities(ctx context.Context, addr string, opts Options, r *Res
 	// Insecure renegotiation (RFC 5746): ServerHello omits renegotiation_info.
 	v.InsecureRenegotiation = handshake.ProbeInsecureRenegotiation(ctx, addr, opts.Timeout)
 
+	// ROBOT (Return Of Bleichenbacher's Oracle Threat, 2017): an RSA-kex
+	// Bleichenbacher padding oracle. Only applies to TLS_RSA_WITH_* suites; the
+	// probe offers RSA-kex only, extracts the server's RSA public key, and checks
+	// whether five crafted PKCS#1 v1.5 ClientKeyExchange vectors (one valid, four
+	// malformed) elicit distinguishable, reproducible responses. Fully fail-safe:
+	// any inconsistency / non-RSA-kex / transport noise => false.
+	v.Robot = handshake.ProbeROBOT(ctx, addr, opts.Host, opts.Timeout)
+
 	// TLS_FALLBACK_SCSV (RFC 7507): only meaningful when the server supports at
 	// least two protocol versions, so we can attempt a real downgrade one
 	// version below its maximum. If it supports a single version, downgrade
@@ -59,13 +68,12 @@ func probeVulnerabilities(ctx context.Context, addr string, opts Options, r *Res
 	}
 
 	// --- DEFERRED active probes (intentionally left false) ---
-	// ROBOT, GoldenDoodle, ZombiePoodle, SleepingPoodle and CVE-2019-1559 are
-	// all padding / Bleichenbacher-style oracles. Detecting them reliably
-	// requires differential timing/response analysis across many crafted
-	// records, which carries a high false-positive risk against load balancers,
-	// WAFs and tolerant TLS stacks. Deferred: padding/Bleichenbacher oracle,
-	// requires differential analysis, high false-positive risk.
-	//   v.Robot                = false
+	// GoldenDoodle, ZombiePoodle, SleepingPoodle and CVE-2019-1559 are all CBC
+	// padding oracles. Detecting them reliably requires differential
+	// timing/response analysis across many crafted records, which carries a high
+	// false-positive risk against load balancers, WAFs and tolerant TLS stacks.
+	// ROBOT (a Bleichenbacher RSA-kex oracle) is now an ACTIVE probe above; the
+	// remaining CBC family stays deferred and will be done separately.
 	//   v.GoldenDoodle         = false
 	//   v.ZombiePoodle         = false
 	//   v.SleepingPoodle       = false
