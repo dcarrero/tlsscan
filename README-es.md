@@ -93,8 +93,7 @@ Endpoints:
   no pudo ejecutarse (por ejemplo, si el guard anti-SSRF rechazó el objetivo).
 
 El servicio escucha en una dirección privada/loopback por defecto y está pensado para
-alcanzarse por red privada o tras un reverse proxy interno — ver
-[DEPLOY_RUNCLOUD.md](DEPLOY_RUNCLOUD.md).
+alcanzarse por red privada o tras un reverse proxy interno.
 
 ## Compilar
 

@@ -92,7 +92,7 @@ Endpoints:
   could not run (e.g. the SSRF guard rejected the target).
 
 The service binds to a private/loopback address by default and is meant to be reached
-over a private network or reverse-proxied internally — see [DEPLOY_RUNCLOUD.md](DEPLOY_RUNCLOUD.md).
+over a private network or reverse-proxied internally.
 
 ## Building
 
