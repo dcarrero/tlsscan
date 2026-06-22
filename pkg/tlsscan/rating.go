@@ -63,6 +63,13 @@ func rate(r *Result) (RatingBreakdown, Grade, []string) {
 		grade = capAt(grade, GradeC)
 	}
 
+	// Export cipher suites (FREAK / Logjam) are insecure by construction and cap
+	// to C, in line with the insecure-cipher rule above.
+	if v.Freak || v.Logjam {
+		caps = append(caps, "export-cipher")
+		grade = capAt(grade, GradeC)
+	}
+
 	// TLS 1.3 + clean config earns A+.
 	if grade == GradeA && r.Protocols.TLS13 && len(r.Ciphers.Weak) == 0 &&
 		len(r.Ciphers.Insecure) == 0 && r.Certificate.DaysToExpiry > 30 {

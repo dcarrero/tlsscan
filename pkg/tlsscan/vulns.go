@@ -3,6 +3,7 @@ package tlsscan
 import (
 	"context"
 
+	"github.com/dcarrero/tlsscan/internal/handshake"
 	"github.com/dcarrero/tlsscan/internal/vulns"
 )
 
@@ -31,25 +32,90 @@ func probeVulnerabilities(ctx context.Context, addr string, opts Options, r *Res
 	v.Sweet32 = has3DES(r.Ciphers)
 
 	// --- Active probes ---
-	// Heartbleed is fully implemented in internal/vulns. On any transport
-	// error we treat the host as not vulnerable (fail safe) rather than
-	// failing the whole scan.
+	// All of these are record/handshake-layer probes that interpret only the
+	// first bytes of the server's reply. Each is FAIL-SAFE: timeout / reset /
+	// alert / ambiguous response => not vulnerable (never a false positive).
+
+	// Heartbleed (CVE-2014-0160): malformed Heartbeat + oversized response.
 	if hb, err := vulns.Heartbleed(ctx, addr, opts.Timeout); err == nil {
 		v.Heartbleed = hb
 	}
 
-	// --- Remaining active probes (delegated; stubs in this skeleton) ---
-	// v.Robot = vulns.Robot(ctx, addr, opts.Timeout)
-	// v.Freak = vulns.Freak(ctx, addr, opts.Timeout)
-	// v.Logjam = vulns.Logjam(ctx, addr, opts.Timeout)
-	// v.GoldenDoodle = vulns.GoldenDoodle(ctx, addr, opts.Timeout)
-	// v.ZombiePoodle = vulns.ZombiePoodle(ctx, addr, opts.Timeout)
-	// v.SleepingPoodle = vulns.SleepingPoodle(ctx, addr, opts.Timeout)
-	// v.ZeroLengthPaddingCVE = vulns.CVE20191559(ctx, addr, opts.Timeout)
-	// v.InsecureRenegotiation = vulns.InsecureRenegotiation(ctx, addr, opts.Timeout)
-	// v.TLSFallbackSCSV = vulns.FallbackSCSVMissing(ctx, addr, opts.Timeout)
+	// FREAK (CVE-2015-0204): server willing to select an RSA_EXPORT suite.
+	v.Freak = handshake.ProbeExportRSA(ctx, addr, opts.Timeout)
+
+	// Logjam (CVE-2015-4000): server willing to select a DHE_EXPORT suite.
+	v.Logjam = handshake.ProbeExportDH(ctx, addr, opts.Timeout)
+
+	// Insecure renegotiation (RFC 5746): ServerHello omits renegotiation_info.
+	v.InsecureRenegotiation = handshake.ProbeInsecureRenegotiation(ctx, addr, opts.Timeout)
+
+	// TLS_FALLBACK_SCSV (RFC 7507): only meaningful when the server supports at
+	// least two protocol versions, so we can attempt a real downgrade one
+	// version below its maximum. If it supports a single version, downgrade
+	// protection does not apply => not missing (false).
+	if fb := fallbackProbeVersion(r.Protocols); fb != 0 {
+		v.TLSFallbackSCSV = handshake.ProbeFallbackSCSVMissing(ctx, addr, fb, opts.Timeout)
+	}
+
+	// --- DEFERRED active probes (intentionally left false) ---
+	// ROBOT, GoldenDoodle, ZombiePoodle, SleepingPoodle and CVE-2019-1559 are
+	// all padding / Bleichenbacher-style oracles. Detecting them reliably
+	// requires differential timing/response analysis across many crafted
+	// records, which carries a high false-positive risk against load balancers,
+	// WAFs and tolerant TLS stacks. Deferred: padding/Bleichenbacher oracle,
+	// requires differential analysis, high false-positive risk.
+	//   v.Robot                = false
+	//   v.GoldenDoodle         = false
+	//   v.ZombiePoodle         = false
+	//   v.SleepingPoodle       = false
+	//   v.ZeroLengthPaddingCVE = false
 
 	return v
+}
+
+// fallbackProbeVersion returns a TLS version (on-the-wire value) strictly below
+// the server's highest supported version, to be used as the pinned MaxVersion in
+// the FALLBACK_SCSV downgrade probe. It returns 0 when the server supports only
+// one version (or none), in which case the fallback probe does not apply.
+//
+// We never use TLS 1.3 as the fallback target: TLS 1.3 carries its supported
+// version in an extension and downgrade protection there works differently, so
+// the classic RFC 7507 alert is observed on TLS 1.2-and-below downgrades.
+func fallbackProbeVersion(p Protocols) uint16 {
+	// Collect supported versions from lowest to highest (wire values).
+	const (
+		wireTLS10 = 0x0301
+		wireTLS11 = 0x0302
+		wireTLS12 = 0x0303
+	)
+	var supported []uint16
+	if p.TLS10 {
+		supported = append(supported, wireTLS10)
+	}
+	if p.TLS11 {
+		supported = append(supported, wireTLS11)
+	}
+	if p.TLS12 {
+		supported = append(supported, wireTLS12)
+	}
+	// We need at least two distinct sub-1.3 versions to attempt a downgrade that
+	// the FALLBACK_SCSV alert can fire on. If only TLS 1.3 plus a single lower
+	// version exist, a downgrade from 1.3 to that version is also testable, so
+	// count TLS 1.3 as raising the ceiling.
+	highestSub13Count := len(supported)
+	if highestSub13Count == 0 {
+		return 0
+	}
+	if p.TLS13 {
+		// Downgrade target is the highest sub-1.3 version (one below 1.3).
+		return supported[highestSub13Count-1]
+	}
+	if highestSub13Count < 2 {
+		return 0 // only a single sub-1.3 version and no 1.3 above it: no downgrade
+	}
+	// Target is one version below the highest sub-1.3 version.
+	return supported[highestSub13Count-2]
 }
 
 func hasCBC(c CipherSummary) bool {

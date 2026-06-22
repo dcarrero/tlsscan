@@ -76,6 +76,9 @@ func printText(r *tlsscan.Result) {
 		r.Certificate.Valid, r.Certificate.DaysToExpiry, r.Certificate.KeyType, r.Certificate.KeyBits, r.Certificate.HostnameMatch)
 	fmt.Printf("Ciphers: %d strong, %d weak, %d insecure\n",
 		len(r.Ciphers.Strong), len(r.Ciphers.Weak), len(r.Ciphers.Insecure))
+	v := r.Vulnerabilities
+	fmt.Printf("Vulns: heartbleed=%v drown=%v freak=%v logjam=%v poodle=%v beast=%v sweet32=%v insecure_reneg=%v fallback_scsv_missing=%v\n",
+		v.Heartbleed, v.Drown, v.Freak, v.Logjam, v.Poodle, v.Beast, v.Sweet32, v.InsecureRenegotiation, v.TLSFallbackSCSV)
 	if len(r.Errors) > 0 {
 		fmt.Printf("Errors: %v\n", r.Errors)
 	}

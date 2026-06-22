@@ -119,6 +119,8 @@ version is verified against `ConnectionState` (defense in depth):
 - **SSLv3** — Go won't negotiate it, so tlsscan sends a **hand-crafted SSLv3
   ClientHello** at the record layer and inspects the reply (feeds POODLE). No crypto
   is implemented; it only decides whether the server is willing to speak SSLv3.
+- **SSLv2** — detected with a real **SSLv2 CLIENT-HELLO** (the legacy 2-byte record
+  framing) looking for an SSLv2 SERVER-HELLO; feeds DROWN. No crypto is implemented.
 - **ALPN / HTTP2** — detected from the negotiated protocol during certificate fetch.
 
 ### Certificate
@@ -144,13 +146,36 @@ inferred from ECDHE/DHE key exchange.
 
 ### Vulnerabilities (`CheckVulns: true`)
 
-- **Heartbleed (CVE-2014-0160)** — **active probe**: after a handshake it sends a
-  malformed Heartbeat request claiming 16384 bytes of payload while sending one, and
-  detects an oversized response (memory leak). Fails safe: any transport error is
-  treated as not vulnerable. The leaked bytes are never inspected or stored.
+All active probes operate purely at the **record / handshake layer**: they emit a
+hand-crafted ClientHello (or SSLv2 CLIENT-HELLO) and interpret only the first bytes
+of the reply. No cryptography is implemented and no handshake is ever completed.
+Every probe is **fail-safe** — a timeout, reset, alert or ambiguous reply yields the
+non-vulnerable answer, never a false positive.
+
+**Active probes:**
+
+- **Heartbleed (CVE-2014-0160)** — sends a malformed Heartbeat request claiming
+  16384 bytes of payload while sending one, and detects an oversized response
+  (memory leak). The leaked bytes are never inspected or stored.
+- **SSLv2 / DROWN (CVE-2016-0800)** — sends a real SSLv2 CLIENT-HELLO (2-byte
+  record header, message type 0x01, version 0x0002, 3-byte cipher-specs) and looks
+  for an SSLv2 SERVER-HELLO (type 0x04). DROWN is derived from SSLv2 support.
+- **FREAK (CVE-2015-0204)** — offers ONLY RSA_EXPORT cipher suites in a TLS 1.0
+  ClientHello; a ServerHello reply means the server accepted an export suite.
+- **Logjam (CVE-2015-4000)** — offers ONLY DHE_EXPORT cipher suites; a ServerHello
+  reply means vulnerable.
+- **TLS_FALLBACK_SCSV (RFC 7507)** — sends a ClientHello pinned one version below
+  the server's maximum, including the FALLBACK_SCSV (0x5600) marker. A fatal
+  `inappropriate_fallback` alert means downgrade protection is present
+  (`tls_fallback_scsv_missing: false`); a completed lower-version handshake means
+  it is missing (`true`). Only attempted when the server supports >1 version.
+- **Insecure renegotiation (RFC 5746)** — sends a TLS 1.2 ClientHello advertising
+  an empty `renegotiation_info` extension; a ServerHello that does NOT echo
+  `renegotiation_info` (0xff01) lacks secure renegotiation support.
+
+**Inferred from the protocol / cipher results:**
+
 - **POODLE** — inferred from SSLv3 being enabled (real SSLv3 probe).
-- **DROWN** — inferred from SSLv2 being enabled (currently always `false`; see
-  Limitations).
 - **BEAST** — inferred from TLS 1.0 negotiated together with a CBC cipher suite.
 - **SWEET32** — inferred from a 64-bit block cipher (3DES) being accepted.
 
@@ -171,9 +196,10 @@ grade and adjusted by **grade caps**:
 | Condition | Cap |
 |-----------|-----|
 | Certificate trust problem (invalid / self-signed / distrusted / hostname mismatch) | **T** |
-| Critical vulnerability (Heartbleed, ROBOT, DROWN, insecure renegotiation) | **F** |
+| Critical vulnerability (Heartbleed, DROWN, insecure renegotiation) | **F** |
 | SSLv2 enabled | **F** |
 | SSLv3 enabled | **C** |
+| Export ciphers (FREAK / Logjam) | **C** |
 | No forward secrecy | **B** |
 | Any insecure cipher | **C** |
 
@@ -200,23 +226,23 @@ go test ./... -run BadSSL
 ## Known limitations
 
 tlsscan is honest about what is and isn't implemented. The following are present in the
-`Result` schema (so the JSON contract is stable) but **always return `false`** today:
+`Result` schema (so the JSON contract is stable) but are **deferred** and **always
+return `false`** today:
 
-- **SSLv2 detection** — `ProbeSSL2` is a documented stub (SSLv2's 2-byte-header
-  ClientHello is rare and risky to hand-craft against arbitrary servers). As a
-  consequence, **DROWN** (which is inferred from SSLv2) also stays `false`.
 - **ROBOT**
-- **FREAK**
-- **Logjam**
 - **GoldenDoodle**
 - **ZombiePoodle**
 - **SleepingPoodle**
 - **CVE-2019-1559** (zero-length padding oracle)
-- **Insecure Renegotiation**
-- **TLS_FALLBACK_SCSV** (missing-downgrade-protection detection)
 
-These are wired as placeholders in `pkg/tlsscan/vulns.go` and `internal/vulns/` and will
-be implemented as dedicated active probes.
+These are all padding / Bleichenbacher-style oracles. Detecting them reliably requires
+**differential timing/response analysis** across many crafted records, which carries a
+high false-positive risk against load balancers, WAFs and tolerant TLS stacks. Rather
+than emit unreliable findings, they are deliberately left unimplemented until they can
+be probed without false positives.
+
+Everything else listed under *Vulnerabilities* above — Heartbleed, SSLv2/DROWN, FREAK,
+Logjam, TLS_FALLBACK_SCSV and insecure renegotiation — is now a real active probe.
 
 ## Security / SSRF note
 

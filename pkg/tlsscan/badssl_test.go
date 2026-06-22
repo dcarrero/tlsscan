@@ -117,3 +117,67 @@ func TestBadSSL_3DES(t *testing.T) {
 		t.Errorf("3des.badssl.com: SWEET32 = false, want true (insecure=%v)", res.Ciphers.Insecure)
 	}
 }
+
+// fallbackProbeVersion is a pure function: validate its downgrade-target logic
+// without touching the network (runs under -short).
+func TestFallbackProbeVersion(t *testing.T) {
+	const (
+		wireTLS10 = 0x0301
+		wireTLS11 = 0x0302
+		wireTLS12 = 0x0303
+	)
+	cases := []struct {
+		name string
+		p    Protocols
+		want uint16
+	}{
+		{"only tls1.2", Protocols{TLS12: true}, 0},
+		{"only tls1.3", Protocols{TLS13: true}, 0},
+		{"tls1.2+1.3 -> target 1.2", Protocols{TLS12: true, TLS13: true}, wireTLS12},
+		{"tls1.0+1.1+1.2 -> target 1.1", Protocols{TLS10: true, TLS11: true, TLS12: true}, wireTLS11},
+		{"tls1.1+1.2 -> target 1.1", Protocols{TLS11: true, TLS12: true}, wireTLS11},
+		{"only tls1.0 -> none", Protocols{TLS10: true}, 0},
+		{"tls1.0+1.3 -> target 1.0", Protocols{TLS10: true, TLS13: true}, wireTLS10},
+		{"none", Protocols{}, 0},
+	}
+	for _, c := range cases {
+		if got := fallbackProbeVersion(c.p); got != c.want {
+			t.Errorf("%s: fallbackProbeVersion = 0x%04x, want 0x%04x", c.name, got, c.want)
+		}
+	}
+}
+
+// TestModernServers_NoFalseVulns is the most important guarantee: against modern,
+// well-configured servers (Google, Cloudflare) none of the new active probes may
+// fire. Robustness here matters more than asserting presence on fragile legacy
+// hosts.
+func TestModernServers_NoFalseVulns(t *testing.T) {
+	for _, host := range []string{"google.com", "cloudflare.com", "sha256.badssl.com"} {
+		host := host
+		t.Run(host, func(t *testing.T) {
+			res := scanBadSSL(t, host, true)
+			v := res.Vulnerabilities
+			if res.Protocols.SSL2 {
+				t.Errorf("%s: SSL2 = true, want false (no DROWN on modern host)", host)
+			}
+			if v.Drown {
+				t.Errorf("%s: DROWN = true, want false", host)
+			}
+			if v.Freak {
+				t.Errorf("%s: FREAK = true, want false", host)
+			}
+			if v.Logjam {
+				t.Errorf("%s: Logjam = true, want false", host)
+			}
+			if v.InsecureRenegotiation {
+				t.Errorf("%s: InsecureRenegotiation = true, want false", host)
+			}
+			if v.TLSFallbackSCSV {
+				t.Errorf("%s: TLS_FALLBACK_SCSV missing = true, want false", host)
+			}
+			if v.Heartbleed {
+				t.Errorf("%s: Heartbleed = true, want false", host)
+			}
+		})
+	}
+}

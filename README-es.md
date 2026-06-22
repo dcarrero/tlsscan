@@ -120,6 +120,8 @@ negociada se verifica contra `ConnectionState` (defensa en profundidad):
 - **SSLv3** — Go no lo negocia, así que tlsscan envía un **ClientHello SSLv3 construido a
   mano** a nivel de record e inspecciona la respuesta (alimenta POODLE). No implementa
   criptografía; solo decide si el servidor está dispuesto a hablar SSLv3.
+- **SSLv2** — detectado con un **CLIENT-HELLO SSLv2** real (el framing legacy de cabecera
+  de 2 bytes) buscando un SERVER-HELLO SSLv2; alimenta DROWN. No implementa criptografía.
 - **ALPN / HTTP2** — detectados a partir del protocolo negociado durante la obtención del
   certificado.
 
@@ -147,14 +149,36 @@ secrecy** se infiere del intercambio de claves ECDHE/DHE.
 
 ### Vulnerabilidades (`CheckVulns: true`)
 
-- **Heartbleed (CVE-2014-0160)** — **probe activo**: tras un handshake envía una petición
-  Heartbeat malformada que declara 16384 bytes de payload pero envía uno, y detecta una
-  respuesta sobredimensionada (fuga de memoria). Falla seguro: cualquier error de
-  transporte se trata como no vulnerable. Los bytes filtrados nunca se inspeccionan ni
-  almacenan.
+Todos los probes activos operan únicamente a nivel de **record / handshake**: emiten un
+ClientHello (o CLIENT-HELLO SSLv2) construido a mano e interpretan solo los primeros
+bytes de la respuesta. No implementan criptografía y nunca completan el handshake. Todos
+fallan seguro: ante timeout, RST, alerta o respuesta ambigua devuelven el resultado no
+vulnerable, nunca un falso positivo.
+
+**Probes activos:**
+
+- **Heartbleed (CVE-2014-0160)** — envía una petición Heartbeat malformada que declara
+  16384 bytes de payload pero envía uno, y detecta una respuesta sobredimensionada (fuga
+  de memoria). Los bytes filtrados nunca se inspeccionan ni almacenan.
+- **SSLv2 / DROWN (CVE-2016-0800)** — envía un CLIENT-HELLO SSLv2 real (cabecera de
+  record de 2 bytes, tipo de mensaje 0x01, versión 0x0002, cipher-specs de 3 bytes) y
+  busca un SERVER-HELLO SSLv2 (tipo 0x04). DROWN se deriva del soporte de SSLv2.
+- **FREAK (CVE-2015-0204)** — ofrece SOLO cipher suites RSA_EXPORT en un ClientHello
+  TLS 1.0; un ServerHello en respuesta significa que el servidor aceptó una suite export.
+- **Logjam (CVE-2015-4000)** — ofrece SOLO cipher suites DHE_EXPORT; un ServerHello en
+  respuesta significa vulnerable.
+- **TLS_FALLBACK_SCSV (RFC 7507)** — envía un ClientHello fijado una versión por debajo
+  del máximo del servidor, incluyendo el marcador FALLBACK_SCSV (0x5600). Una alerta
+  fatal `inappropriate_fallback` significa que la protección de downgrade está presente
+  (`tls_fallback_scsv_missing: false`); un handshake completado en la versión inferior
+  significa que falta (`true`). Solo se intenta si el servidor soporta más de una versión.
+- **Renegociación insegura (RFC 5746)** — envía un ClientHello TLS 1.2 anunciando una
+  extensión `renegotiation_info` vacía; un ServerHello que NO devuelve `renegotiation_info`
+  (0xff01) carece de soporte de renegociación segura.
+
+**Inferidas de los resultados de protocolo / cipher:**
+
 - **POODLE** — inferido de que SSLv3 esté habilitado (probe SSLv3 real).
-- **DROWN** — inferido de que SSLv2 esté habilitado (actualmente siempre `false`; ver
-  Limitaciones).
 - **BEAST** — inferido de TLS 1.0 negociado junto con una cipher suite CBC.
 - **SWEET32** — inferido de que se acepte un cifrado de bloque de 64 bits (3DES).
 
@@ -175,9 +199,10 @@ letra y ajustado por **grade caps**:
 | Condición | Cap |
 |-----------|-----|
 | Problema de confianza del certificado (inválido / self-signed / distrustado / hostname no coincide) | **T** |
-| Vulnerabilidad crítica (Heartbleed, ROBOT, DROWN, insecure renegotiation) | **F** |
+| Vulnerabilidad crítica (Heartbleed, DROWN, insecure renegotiation) | **F** |
 | SSLv2 habilitado | **F** |
 | SSLv3 habilitado | **C** |
+| Cifrados export (FREAK / Logjam) | **C** |
 | Sin forward secrecy | **B** |
 | Cualquier cipher insecure | **C** |
 
@@ -205,25 +230,23 @@ go test ./... -run BadSSL
 ## Limitaciones conocidas
 
 tlsscan es honesto sobre qué está implementado y qué no. Lo siguiente está presente en el
-esquema del `Result` (para que el contrato JSON sea estable) pero **siempre devuelve
-`false`** a día de hoy:
+esquema del `Result` (para que el contrato JSON sea estable) pero está **diferido** y
+**siempre devuelve `false`** a día de hoy:
 
-- **Detección de SSLv2** — `ProbeSSL2` es un stub documentado (el ClientHello SSLv2 con
-  cabecera de 2 bytes es raro y arriesgado de construir a mano contra servidores
-  arbitrarios). Como consecuencia, **DROWN** (que se infiere de SSLv2) también queda en
-  `false`.
 - **ROBOT**
-- **FREAK**
-- **Logjam**
 - **GoldenDoodle**
 - **ZombiePoodle**
 - **SleepingPoodle**
 - **CVE-2019-1559** (oráculo de padding de longitud cero)
-- **Insecure Renegotiation**
-- **TLS_FALLBACK_SCSV** (detección de protección de downgrade ausente)
 
-Están cableadas como placeholders en `pkg/tlsscan/vulns.go` e `internal/vulns/` y se
-implementarán como probes activos dedicados.
+Todos son oráculos de padding / estilo Bleichenbacher. Detectarlos de forma fiable exige
+un **análisis diferencial de tiempos/respuestas** sobre muchos records construidos, lo que
+conlleva un alto riesgo de falsos positivos contra balanceadores, WAFs y stacks TLS
+tolerantes. En lugar de emitir hallazgos poco fiables, se dejan deliberadamente sin
+implementar hasta poder probarlos sin falsos positivos.
+
+Todo lo demás listado en *Vulnerabilidades* arriba — Heartbleed, SSLv2/DROWN, FREAK,
+Logjam, TLS_FALLBACK_SCSV y renegociación insegura — es ya un probe activo real.
 
 ## Nota de seguridad / SSRF
 
