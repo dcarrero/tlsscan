@@ -35,9 +35,12 @@ func rate(r *Result) (RatingBreakdown, Grade, []string) {
 		grade = GradeT
 	}
 
-	// Critical vulnerabilities cap to F.
+	// Critical vulnerabilities cap to F. The CBC padding-oracle family (Zombie
+	// POODLE / GOLDENDOODLE / Sleeping POODLE / CVE-2019-1559) are plaintext-
+	// recovery oracles on a par with ROBOT, so they cap to F as well.
 	v := r.Vulnerabilities
-	if v.Heartbleed || v.Robot || v.Drown || v.InsecureRenegotiation {
+	if v.Heartbleed || v.Robot || v.Drown || v.InsecureRenegotiation ||
+		v.GoldenDoodle || v.ZombiePoodle || v.SleepingPoodle || v.ZeroLengthPaddingCVE {
 		caps = append(caps, "critical-vulnerability")
 		grade = GradeF
 	}

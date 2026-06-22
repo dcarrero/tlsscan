@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-22
+
+### Added
+
+- **CBC padding-oracle family detection (Zombie POODLE / GOLDENDOODLE / Sleeping
+  POODLE / 0-length OpenSSL CVE-2019-1559).** These four flaws move from
+  *deferred* to a single **active probe**
+  (`handshake.ProbeCBCPaddingOracles`), wired into `probeVulnerabilities` and
+  exposed as `vulnerabilities.goldendoodle`, `vulnerabilities.zombie_poodle`,
+  `vulnerabilities.sleeping_poodle` and `vulnerabilities.cve_2019_1559`. This is
+  a faithful, dependency-free implementation of Craig Young's technique — not an
+  invented heuristic.
+
+  Because these oracles are only observable on an **established** TLS 1.2 CBC
+  session, the probe required a **hand-rolled TLS 1.2 CBC + HMAC-SHA client**
+  (`internal/handshake/cbc.go`):
+  1. **Real handshake.** A ClientHello offering CBC suites
+     (`ECDHE_RSA_WITH_AES_128/256_CBC_SHA` 0xc013/0xc014, `RSA_WITH_AES_*_CBC_SHA`
+     0x002f/0x0035) with SNI / supported_groups / ec_point_formats /
+     signature_algorithms. For ECDHE the ServerKeyExchange is parsed (named curve
+     + public point) and the shared secret derived with `crypto/ecdh`; for RSA-kex
+     the premaster is encrypted with `crypto/rsa` (`EncryptPKCS1v15`).
+  2. **Key derivation.** master_secret and key_block via the **TLS 1.2 PRF**
+     (`P_SHA256`, RFC 5246) implemented as plumbing over `crypto/hmac` +
+     `crypto/sha256`.
+  3. **Record layer.** CBC records with explicit IV, MAC-then-encrypt
+     (HMAC-SHA1 over `seq || type || version || len || content`, then TLS padding,
+     then AES-CBC) using `crypto/aes` / `crypto/hmac` / `crypto/sha1`. The client
+     `Finished` (`verify_data = PRF(master, "client finished", SHA256(transcript),
+     12)`) is sent and the server's acceptance (its ChangeCipherSpec + encrypted
+     Finished) is required before any oracle probing. **No cryptographic algorithm
+     is reimplemented — only stdlib primitives plus TLS framing/PRF plumbing.**
+
+  Detection sends crafted application-data records over fresh sessions —
+  **invalid MAC** (valid padding) → GOLDENDOODLE; **invalid padding** → Zombie
+  POODLE; **zero-length padding** → CVE-2019-1559 / Sleeping POODLE — and compares
+  the server's reproducible reactions (alert / data / reset / close / timeout). A
+  constant-time (Lucky13-hardened) server reacts identically to all
+  manipulations ⇒ no oracle ⇒ all four `false`. A specific vuln is flagged
+  **only** when its vector's reaction is different **and** reproducible (2
+  repetitions on independent sessions) versus the others, per Young's mapping.
+
+  **Strictly fail-safe:** no CBC suite negotiated (AEAD/GCM/ChaCha-only ⇒ N/A),
+  handshake not accepted, or any non-reproducible / noisy / timed-out result ⇒ all
+  four `false`. The whole probe is hard-capped (per-session ≤ 3 s, overall ≤ 12 s)
+  so it cannot approach the scan budget.
+
+- **CBC padding oracles cap the grade to `F`** (a critical, plaintext-recovery
+  class on a par with ROBOT) — see `rating.go`.
+
+### Notes / validation
+
+- **Proof of life (mandatory before trusting detection):** the hand-rolled CBC
+  client was validated end-to-end against live servers — it completes handshakes
+  the server *accepts* (server Finished received) and **decrypts real HTTP
+  responses** from `www.google.com`, `google.com`, `www.microsoft.com`,
+  `www.yahoo.com`, `www.bing.com`, `www.amazon.com`, `github.com` and several
+  `*.badssl.com` endpoints (both AES-128 and AES-256 CBC, ECDHE_RSA). See the
+  opt-in `TestCBC_LifeProof` (`TLSSCAN_CBC_LIFETEST=1`).
+- **Offline unit tests:** the TLS 1.2 PRF against the canonical IETF
+  `P_SHA256` test vector, the record construction (computeMAC, MAC-then-pad
+  block alignment, explicit-IV CBC round-trip), and the differential
+  classification logic with simulated reactions.
+- **True-positive path validated by construction only.** There is no publicly
+  available CBC-padding-oracle reference server, so the probe is deliberately
+  biased toward false negatives: the network suite asserts **no false positives**
+  (all four `false`) against `google.com`, `cloudflare.com`, `badssl.com` and
+  `sha256.badssl.com`. A real but marginal oracle may go undetected — by design,
+  since a false positive is the worse outcome.
+
 ## [0.3.0] - 2026-06-22
 
 ### Added
@@ -171,7 +241,9 @@ always return `false`; they will be implemented as dedicated active probes:
 - **Insecure Renegotiation**
 - **TLS_FALLBACK_SCSV** (missing downgrade-protection detection)
 
-[Unreleased]: https://github.com/dcarrero/tlsscan/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dcarrero/tlsscan/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/dcarrero/tlsscan/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/dcarrero/tlsscan/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dcarrero/tlsscan/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/dcarrero/tlsscan/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/dcarrero/tlsscan/releases/tag/v0.1.0

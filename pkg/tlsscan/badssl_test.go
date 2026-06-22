@@ -185,6 +185,23 @@ func TestModernServers_NoFalseVulns(t *testing.T) {
 			if v.Robot {
 				t.Errorf("%s: ROBOT = true, want false", host)
 			}
+			// CBC padding-oracle family (Zombie POODLE / GOLDENDOODLE / Sleeping
+			// POODLE / CVE-2019-1559): modern, Lucky13-hardened servers react
+			// identically to all record manipulations and must NOT be flagged. As
+			// with ROBOT we assert NO false positive only (no vulnerable reference
+			// server exists to validate a true positive).
+			if v.GoldenDoodle {
+				t.Errorf("%s: GoldenDoodle = true, want false", host)
+			}
+			if v.ZombiePoodle {
+				t.Errorf("%s: ZombiePoodle = true, want false", host)
+			}
+			if v.SleepingPoodle {
+				t.Errorf("%s: SleepingPoodle = true, want false", host)
+			}
+			if v.ZeroLengthPaddingCVE {
+				t.Errorf("%s: CVE-2019-1559 = true, want false", host)
+			}
 		})
 	}
 }

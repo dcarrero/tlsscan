@@ -194,6 +194,31 @@ non-vulnerable answer, never a false positive.
   logic) because we have no vulnerable reference server; the network tests only
   assert *no false positives*.
 
+- **CBC padding-oracle family — Zombie POODLE / GOLDENDOODLE / Sleeping POODLE /
+  0-length OpenSSL (CVE-2019-1559)** (Craig Young's technique). These oracles can
+  only be observed *after* a TLS 1.2 CBC session is established, so the probe
+  drives a **hand-rolled TLS 1.2 CBC + HMAC-SHA client** built entirely on
+  standard-library primitives (`crypto/aes`, `crypto/hmac`, `crypto/sha1`,
+  `crypto/sha256`, `crypto/ecdh`, `crypto/rsa`) — no cryptographic algorithm is
+  reimplemented; only the TLS record/handshake framing and the RFC 5246 PRF
+  (`P_SHA256`) plumbing are assembled by hand. It completes a real
+  `ECDHE_RSA_WITH_AES_*_CBC_SHA` (or `RSA_WITH_AES_*_CBC_SHA`) handshake — the
+  server *accepts* our client `Finished` — and then sends crafted
+  application-data records: **valid MAC**, **invalid MAC** (valid padding),
+  **invalid padding**, and **zero-length padding**. A constant-time
+  (Lucky13-hardened) server reacts *identically* to every manipulation ⇒ no
+  oracle ⇒ all four `false`. A specific vuln is reported **only** when its
+  vector's reaction is **different and reproducible** versus the others, per
+  Young's mapping. **Strictly fail-safe:** no CBC suite negotiated, handshake
+  failure, or any non-reproducible / noisy result ⇒ all four `false`. The
+  hand-rolled client is **proof-of-life validated** (it completes handshakes and
+  decrypts real HTTP responses from live servers — Google, Microsoft, GitHub,
+  badssl.com, etc.). As with ROBOT, the **true-positive path is validated by
+  construction** (we have no known-vulnerable reference server); the probe is
+  deliberately tuned to never fire on modern servers, accepting a possible false
+  negative on a marginal oracle. Each is a **critical** vulnerability and caps
+  the grade to **F**.
+
 **Inferred from the protocol / cipher results:**
 
 - **POODLE** — inferred from SSLv3 being enabled (real SSLv3 probe).
@@ -217,7 +242,7 @@ grade and adjusted by **grade caps**:
 | Condition | Cap |
 |-----------|-----|
 | Certificate trust problem (invalid / self-signed / distrusted / hostname mismatch) | **T** |
-| Critical vulnerability (Heartbleed, DROWN, ROBOT, insecure renegotiation) | **F** |
+| Critical vulnerability (Heartbleed, DROWN, ROBOT, insecure renegotiation, CBC padding oracles) | **F** |
 | SSLv2 enabled | **F** |
 | SSLv3 enabled | **C** |
 | Export ciphers (FREAK / Logjam) | **C** |
@@ -246,25 +271,27 @@ go test ./... -run BadSSL
 
 ## Known limitations
 
-tlsscan is honest about what is and isn't implemented. The following are present in the
-`Result` schema (so the JSON contract is stable) but are **deferred** and **always
-return `false`** today:
+tlsscan is honest about what is and isn't implemented. **Every** vulnerability in the
+`Result` schema is now backed by a real active or inferred probe — there are no longer
+any permanently-`false` deferred fields.
 
-- **GoldenDoodle**
-- **ZombiePoodle**
-- **SleepingPoodle**
-- **CVE-2019-1559** (zero-length padding oracle)
+The **CBC padding-oracle family** (GoldenDoodle, ZombiePoodle, SleepingPoodle,
+CVE-2019-1559) is implemented as a real active probe (see *Active probes* above), but
+with an important honesty caveat:
 
-These remaining four are all **CBC** padding oracles. Detecting them reliably requires
-**differential timing/response analysis** across many crafted records, which carries a
-high false-positive risk against load balancers, WAFs and tolerant TLS stacks. Rather
-than emit unreliable findings, they are deliberately left unimplemented until they can
-be probed without false positives.
+- The hand-rolled TLS 1.2 CBC client is **proof-of-life validated** — it completes
+  handshakes that real servers accept and decrypts genuine HTTP responses.
+- The **detection logic is conservative and validated by construction**: the
+  differential-classification rules are unit-tested with simulated reactions, and the
+  network suite asserts **no false positives** against modern servers (Google,
+  Cloudflare, badssl.com). The *true-positive* path is **not** validated against a live
+  vulnerable server (none is available), so the probe is deliberately biased toward
+  false negatives: it will not flag a server unless it observes a clear, reproducible
+  differential. A real but marginal oracle may go undetected. This is by design — a
+  false positive is considered the worse outcome.
 
-**ROBOT** is no longer deferred: it is now a real active probe (see *Active probes*
-above). Everything else listed under *Vulnerabilities* — Heartbleed, SSLv2/DROWN,
-FREAK, Logjam, TLS_FALLBACK_SCSV, insecure renegotiation and ROBOT — is a real active
-probe.
+Everything else listed under *Vulnerabilities* — Heartbleed, SSLv2/DROWN, FREAK,
+Logjam, TLS_FALLBACK_SCSV, insecure renegotiation and ROBOT — is a real active probe.
 
 ## Security / SSRF note
 

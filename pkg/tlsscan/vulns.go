@@ -67,17 +67,20 @@ func probeVulnerabilities(ctx context.Context, addr string, opts Options, r *Res
 		v.TLSFallbackSCSV = handshake.ProbeFallbackSCSVMissing(ctx, addr, fb, opts.Timeout)
 	}
 
-	// --- DEFERRED active probes (intentionally left false) ---
-	// GoldenDoodle, ZombiePoodle, SleepingPoodle and CVE-2019-1559 are all CBC
-	// padding oracles. Detecting them reliably requires differential
-	// timing/response analysis across many crafted records, which carries a high
-	// false-positive risk against load balancers, WAFs and tolerant TLS stacks.
-	// ROBOT (a Bleichenbacher RSA-kex oracle) is now an ACTIVE probe above; the
-	// remaining CBC family stays deferred and will be done separately.
-	//   v.GoldenDoodle         = false
-	//   v.ZombiePoodle         = false
-	//   v.SleepingPoodle       = false
-	//   v.ZeroLengthPaddingCVE = false
+	// CBC padding-oracle family (Craig Young: Zombie POODLE / GOLDENDOODLE /
+	// Sleeping POODLE / 0-length OpenSSL CVE-2019-1559). These oracles can only be
+	// observed AFTER a TLS 1.2 CBC session is established, so internal/handshake
+	// drives a hand-rolled CBC + HMAC-SHA client (proof-of-life validated) and
+	// sends crafted application-data records (valid MAC, bad MAC, bad padding,
+	// zero-length padding), comparing the server's reproducible reactions. A
+	// constant-time (Lucky13-hardened) server reacts identically to all
+	// manipulations => no oracle => all four false. Fully fail-safe: no CBC suite
+	// negotiated, handshake failure, or any non-reproducible/noisy result =>
+	// all four false. The true-positive path is validated by construction (we
+	// have no known-vulnerable reference server); the probe is tuned to never
+	// fire on modern servers at the cost of possibly missing a marginal oracle.
+	v.GoldenDoodle, v.ZombiePoodle, v.SleepingPoodle, v.ZeroLengthPaddingCVE =
+		handshake.ProbeCBCPaddingOracles(ctx, addr, opts.Host, opts.Timeout)
 
 	return v
 }

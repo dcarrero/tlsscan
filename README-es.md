@@ -195,6 +195,29 @@ vulnerable, nunca un falso positivo.
   (estructura de los vectores + lógica de decisión) porque no disponemos de un servidor
   vulnerable de referencia; los tests de red solo afirman *ausencia de falsos positivos*.
 
+- **Familia de oráculos de padding CBC — Zombie POODLE / GOLDENDOODLE / Sleeping POODLE /
+  0-length OpenSSL (CVE-2019-1559)** (técnica de Craig Young). Estos oráculos solo se
+  observan *tras* establecer una sesión TLS 1.2 CBC, así que el probe usa un **cliente
+  TLS 1.2 CBC + HMAC-SHA hecho a mano** construido enteramente sobre primitivas de la
+  biblioteca estándar (`crypto/aes`, `crypto/hmac`, `crypto/sha1`, `crypto/sha256`,
+  `crypto/ecdh`, `crypto/rsa`) — no se reimplementa ningún algoritmo criptográfico; solo se
+  ensamblan a mano el framing de records/handshake y la PRF de RFC 5246 (`P_SHA256`).
+  Completa un handshake real `ECDHE_RSA_WITH_AES_*_CBC_SHA` (o `RSA_WITH_AES_*_CBC_SHA`)
+  — el servidor *acepta* nuestro `Finished` de cliente — y luego envía records de
+  application-data manipulados: **MAC válido**, **MAC inválido** (padding válido),
+  **padding inválido** y **padding de longitud cero**. Un servidor constant-time
+  (mitigación Lucky13) reacciona *igual* ante toda manipulación ⇒ no hay oráculo ⇒ las
+  cuatro `false`. Una vuln concreta se marca **solo** cuando la reacción de su vector es
+  **distinta y reproducible** frente a las demás, según el mapeo de Young.
+  **Estrictamente fail-safe:** si no se negocia ninguna suite CBC, si el handshake falla, o
+  ante cualquier resultado no reproducible / ruidoso ⇒ las cuatro `false`. El cliente hecho
+  a mano está **validado con prueba de vida** (completa handshakes que servidores reales
+  aceptan y descifra respuestas HTTP reales — Google, Microsoft, GitHub, badssl.com, etc.).
+  Como con ROBOT, el **camino de verdadero positivo se valida por construcción** (no hay
+  servidor vulnerable de referencia); el probe está deliberadamente sesgado a no disparar
+  nunca contra servidores modernos, aceptando un posible falso negativo en un oráculo
+  marginal. Cada una es una vulnerabilidad **crítica** y limita la nota a **F**.
+
 **Inferidas de los resultados de protocolo / cipher:**
 
 - **POODLE** — inferido de que SSLv3 esté habilitado (probe SSLv3 real).
@@ -218,7 +241,7 @@ letra y ajustado por **grade caps**:
 | Condición | Cap |
 |-----------|-----|
 | Problema de confianza del certificado (inválido / self-signed / distrustado / hostname no coincide) | **T** |
-| Vulnerabilidad crítica (Heartbleed, DROWN, ROBOT, insecure renegotiation) | **F** |
+| Vulnerabilidad crítica (Heartbleed, DROWN, ROBOT, insecure renegotiation, oráculos de padding CBC) | **F** |
 | SSLv2 habilitado | **F** |
 | SSLv3 habilitado | **C** |
 | Cifrados export (FREAK / Logjam) | **C** |
@@ -248,24 +271,27 @@ go test ./... -run BadSSL
 
 ## Limitaciones conocidas
 
-tlsscan es honesto sobre qué está implementado y qué no. Lo siguiente está presente en el
-esquema del `Result` (para que el contrato JSON sea estable) pero está **diferido** y
-**siempre devuelve `false`** a día de hoy:
+tlsscan es honesto sobre qué está implementado y qué no. **Todas** las vulnerabilidades
+del esquema `Result` están ahora respaldadas por un probe real (activo o inferido) — ya no
+quedan campos permanentemente en `false`.
 
-- **GoldenDoodle**
-- **ZombiePoodle**
-- **SleepingPoodle**
-- **CVE-2019-1559** (oráculo de padding de longitud cero)
+La **familia de oráculos de padding CBC** (GoldenDoodle, ZombiePoodle, SleepingPoodle,
+CVE-2019-1559) está implementada como probe activo real (ver *Probes activos* arriba), con
+una salvedad importante de honestidad:
 
-Estos cuatro restantes son oráculos de padding **CBC**. Detectarlos de forma fiable exige
-un **análisis diferencial de tiempos/respuestas** sobre muchos records construidos, lo que
-conlleva un alto riesgo de falsos positivos contra balanceadores, WAFs y stacks TLS
-tolerantes. En lugar de emitir hallazgos poco fiables, se dejan deliberadamente sin
-implementar hasta poder probarlos sin falsos positivos.
+- El cliente TLS 1.2 CBC hecho a mano está **validado con prueba de vida** — completa
+  handshakes que servidores reales aceptan y descifra respuestas HTTP genuinas.
+- La **lógica de detección es conservadora y se valida por construcción**: las reglas de
+  clasificación diferencial tienen tests unitarios con reacciones simuladas, y la suite de
+  red afirma **ausencia de falsos positivos** contra servidores modernos (Google,
+  Cloudflare, badssl.com). El camino de *verdadero positivo* **no** se valida contra un
+  servidor vulnerable en vivo (no hay ninguno disponible), por lo que el probe está
+  deliberadamente sesgado hacia el falso negativo: no marcará un servidor salvo que observe
+  un diferencial claro y reproducible. Un oráculo real pero marginal puede pasar
+  desapercibido. Es a propósito — un falso positivo se considera el peor desenlace.
 
-**ROBOT** ya no está diferido: es ahora un probe activo real (ver *Probes activos*
-arriba). Todo lo demás listado en *Vulnerabilidades* — Heartbleed, SSLv2/DROWN, FREAK,
-Logjam, TLS_FALLBACK_SCSV, renegociación insegura y ROBOT — es ya un probe activo real.
+Todo lo demás listado en *Vulnerabilidades* — Heartbleed, SSLv2/DROWN, FREAK, Logjam,
+TLS_FALLBACK_SCSV, renegociación insegura y ROBOT — es ya un probe activo real.
 
 ## Nota de seguridad / SSRF
 
