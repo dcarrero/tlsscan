@@ -1,0 +1,9 @@
+# Go build artifacts
+/headerforge-tls
+/tlsscan
+*.test
+*.out
+*.exe
+
+# OS
+.DS_Store
